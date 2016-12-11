@@ -24,9 +24,9 @@ import matplotlib.image as mpimg
 from scipy.ndimage import filters
 import urllib
 from numpy import random
-import parameters
+from alexnetcam_params import *
 
-
+import cPickle
 import tensorflow as tf
 print ""
 
@@ -34,18 +34,26 @@ print ""
 
 # train_x = zeros((1, 227,227,3)).astype(float32)
 # train_y = zeros((1, N_CLASSES))
-# xdim = train_x.shape[1:]
-# ydim = train_y.shape[1]
 
-train_x = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE*IMAGE_SIZE*3])
-train_y = tf.placeholder(tf.float32, shape=[None, ])
 
-image_batch, label_batch = tf.train.shuffle_batch(
-      [train_x, train_y],
-      batch_size=32,
-      num_threads=4,
-      capacity=50000,
-      min_after_dequeue=10000)
+def read_and_decode(filenames):
+    # filenames is probably supposed to be a list of the shard names
+    # TODO: make sure that the images are actually resized!!
+    filename_queue = tf.train.string_input_producer(filenames, num_epochs=None)
+    reader = tf.TFRecordReader()
+    _, serialized_example = reader.read(filename_queue)
+    features = tf.parse_single_example(
+        serialized_example,
+        features = {
+            # We know the length of both fields. If not the
+            # tf.VarLenFeature could be used
+            'label': tf.FixedLenFeature([], tf.int64),
+            'image': tf.VarLenFeature(tf.float32)
+        })
+    label = features['label']
+    image = features['image']
+    return image, label
+
 
 
 ################################################################################
@@ -70,141 +78,234 @@ def conv(input, kernel, biases, k_h, k_w, c_o, s_h, s_w,  padding="VALID", group
         conv = tf.concat(3, output_groups)
     return  tf.reshape(tf.nn.bias_add(conv, biases), [-1]+conv.get_shape().as_list()[1:])
 
+# TODO: idk what x is actually supposed to do
+# ANS: use train_x for x; input should be the placeholder that goes in the feed_dict key
+# x = tf.placeholder(tf.float32, (None,) + xdim)
+
+train_x = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3])
+train_y = tf.placeholder(tf.float32, shape=[None, 1])
+#xdim = tuple(train_x.get_shape()[1:])
+#ydim = tuple(train_y.get_shape()[1:])
+
+# TODO: can you actually just put the graph inside of a method like this?
+def network_model(train_x): 
+    #conv1
+    #conv(11, 11, 96, 4, 4, padding='VALID', name='conv1')
+    k_h = 11; k_w = 11; c_o = 96; s_h = 4; s_w = 4
+    conv1W = tf.Variable(net_data["conv1"][0])
+    conv1b = tf.Variable(net_data["conv1"][1])
+    conv1_in = conv(train_x, conv1W, conv1b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=1)
+    conv1 = tf.nn.relu(conv1_in)
+
+    #lrn1
+    #lrn(2, 2e-05, 0.75, name='norm1')
+    radius = 2; alpha = 2e-05; beta = 0.75; bias = 1.0
+    lrn1 = tf.nn.local_response_normalization(conv1,
+                                                      depth_radius=radius,
+                                                      alpha=alpha,
+                                                      beta=beta,
+                                                      bias=bias)
+
+    #maxpool1
+    #max_pool(3, 3, 2, 2, padding='VALID', name='pool1')
+    k_h = 3; k_w = 3; s_h = 2; s_w = 2; padding = 'VALID'
+    maxpool1 = tf.nn.max_pool(lrn1, ksize=[1, k_h, k_w, 1], strides=[1, s_h, s_w, 1], padding=padding)
 
 
-x = tf.placeholder(tf.float32, (None,) + xdim)
+    #conv2
+    #conv(5, 5, 256, 1, 1, group=2, name='conv2')
+    k_h = 5; k_w = 5; c_o = 256; s_h = 1; s_w = 1; group = 2
+    conv2W = tf.Variable(net_data["conv2"][0])
+    conv2b = tf.Variable(net_data["conv2"][1])
+    conv2_in = conv(maxpool1, conv2W, conv2b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
+    conv2 = tf.nn.relu(conv2_in)
 
 
-#conv1
-#conv(11, 11, 96, 4, 4, padding='VALID', name='conv1')
-k_h = 11; k_w = 11; c_o = 96; s_h = 4; s_w = 4
-conv1W = tf.Variable(net_data["conv1"][0])
-conv1b = tf.Variable(net_data["conv1"][1])
-conv1_in = conv(x, conv1W, conv1b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=1)
-conv1 = tf.nn.relu(conv1_in)
+    #lrn2
+    #lrn(2, 2e-05, 0.75, name='norm2')
+    radius = 2; alpha = 2e-05; beta = 0.75; bias = 1.0
+    lrn2 = tf.nn.local_response_normalization(conv2,
+                                                      depth_radius=radius,
+                                                      alpha=alpha,
+                                                      beta=beta,
+                                                      bias=bias)
 
-#lrn1
-#lrn(2, 2e-05, 0.75, name='norm1')
-radius = 2; alpha = 2e-05; beta = 0.75; bias = 1.0
-lrn1 = tf.nn.local_response_normalization(conv1,
-                                                  depth_radius=radius,
-                                                  alpha=alpha,
-                                                  beta=beta,
-                                                  bias=bias)
+    #maxpool2
+    #max_pool(3, 3, 2, 2, padding='VALID', name='pool2')                                                  
+    k_h = 3; k_w = 3; s_h = 2; s_w = 2; padding = 'VALID'
+    maxpool2 = tf.nn.max_pool(lrn2, ksize=[1, k_h, k_w, 1], strides=[1, s_h, s_w, 1], padding=padding)
 
-#maxpool1
-#max_pool(3, 3, 2, 2, padding='VALID', name='pool1')
-k_h = 3; k_w = 3; s_h = 2; s_w = 2; padding = 'VALID'
-maxpool1 = tf.nn.max_pool(lrn1, ksize=[1, k_h, k_w, 1], strides=[1, s_h, s_w, 1], padding=padding)
+    #conv3
+    #conv(3, 3, 384, 1, 1, name='conv3')
+    k_h = 3; k_w = 3; c_o = 384; s_h = 1; s_w = 1; group = 1
+    conv3W = tf.Variable(net_data["conv3"][0])
+    conv3b = tf.Variable(net_data["conv3"][1])
+    conv3_in = conv(maxpool2, conv3W, conv3b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
+    conv3 = tf.nn.relu(conv3_in)
 
-
-#conv2
-#conv(5, 5, 256, 1, 1, group=2, name='conv2')
-k_h = 5; k_w = 5; c_o = 256; s_h = 1; s_w = 1; group = 2
-conv2W = tf.Variable(net_data["conv2"][0])
-conv2b = tf.Variable(net_data["conv2"][1])
-conv2_in = conv(maxpool1, conv2W, conv2b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
-conv2 = tf.nn.relu(conv2_in)
-
-
-#lrn2
-#lrn(2, 2e-05, 0.75, name='norm2')
-radius = 2; alpha = 2e-05; beta = 0.75; bias = 1.0
-lrn2 = tf.nn.local_response_normalization(conv2,
-                                                  depth_radius=radius,
-                                                  alpha=alpha,
-                                                  beta=beta,
-                                                  bias=bias)
-
-#maxpool2
-#max_pool(3, 3, 2, 2, padding='VALID', name='pool2')                                                  
-k_h = 3; k_w = 3; s_h = 2; s_w = 2; padding = 'VALID'
-maxpool2 = tf.nn.max_pool(lrn2, ksize=[1, k_h, k_w, 1], strides=[1, s_h, s_w, 1], padding=padding)
-
-#conv3
-#conv(3, 3, 384, 1, 1, name='conv3')
-k_h = 3; k_w = 3; c_o = 384; s_h = 1; s_w = 1; group = 1
-conv3W = tf.Variable(net_data["conv3"][0])
-conv3b = tf.Variable(net_data["conv3"][1])
-conv3_in = conv(maxpool2, conv3W, conv3b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
-conv3 = tf.nn.relu(conv3_in)
-
-#conv4
-#conv(3, 3, 384, 1, 1, group=2, name='conv4')
-k_h = 3; k_w = 3; c_o = 384; s_h = 1; s_w = 1; group = 2
-conv4W = tf.Variable(net_data["conv4"][0])
-conv4b = tf.Variable(net_data["conv4"][1])
-conv4_in = conv(conv3, conv4W, conv4b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
-conv4 = tf.nn.relu(conv4_in)
+    #conv4
+    #conv(3, 3, 384, 1, 1, group=2, name='conv4')
+    k_h = 3; k_w = 3; c_o = 384; s_h = 1; s_w = 1; group = 2
+    conv4W = tf.Variable(net_data["conv4"][0])
+    conv4b = tf.Variable(net_data["conv4"][1])
+    conv4_in = conv(conv3, conv4W, conv4b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
+    conv4 = tf.nn.relu(conv4_in)
 
 
-#conv5
-#conv(3, 3, 256, 1, 1, group=2, name='conv5')
-k_h = 3; k_w = 3; c_o = 256; s_h = 1; s_w = 1; group = 2
-conv5W = tf.Variable(net_data["conv5"][0])
-conv5b = tf.Variable(net_data["conv5"][1])
-conv5_in = conv(conv4, conv5W, conv5b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
-conv5 = tf.nn.relu(conv5_in)
+    #conv5
+    #conv(3, 3, 256, 1, 1, group=2, name='conv5')
+    k_h = 3; k_w = 3; c_o = 256; s_h = 1; s_w = 1; group = 2
+    conv5W = tf.Variable(net_data["conv5"][0])
+    conv5b = tf.Variable(net_data["conv5"][1])
+    conv5_in = conv(conv4, conv5W, conv5b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
+    conv5 = tf.nn.relu(conv5_in)
 
 
-# GAP additions
+    # GAP additions
 
-# conv6 layer
-k_h = 3; k_w = 3; c_o = N_CLASSES; s_h = 1; s_w = 1; group = 1
-conv6W = tf.Variable(tf.zeros([3,3,256,N_CLASSES]))
-conv6b = tf.Variable(tf.zeros([N_CLASSES]))
-conv6 = conv(conv5,conv6W, conv6b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
-
-
-# GAP layer
-k_h = int(conv6.get_shape()[1]); k_w = int(conv6.get_shape()[2]); s_h = 1; s_w = 1;
-gap_unsqueezed = tf.nn.avg_pool(conv6, ksize=[1, k_h, k_w, 1], strides=[1, s_h, s_w, 1], padding='VALID')
-gap = tf.squeeze(gap_unsqueezed)
+    # conv6 layer
+    k_h = 3; k_w = 3; c_o = N_CLASSES; s_h = 1; s_w = 1; group = 1
+    conv6W = tf.Variable(tf.zeros([3,3,256,N_CLASSES]))
+    conv6b = tf.Variable(tf.zeros([N_CLASSES]))
+    conv6 = conv(conv5,conv6W, conv6b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
 
 
-# fully-connected layer
-fc_newW = tf.Variable(tf.zeros([N_CLASSES,N_CLASSES]))
-fc_newB = tf.Variable(tf.zeros([N_CLASSES]))
-fc_new = tf.nn.xw_plus_b(gap, fc_newW, fc_newB)
+    # GAP layer
+    k_h = int(conv6.get_shape()[1]); k_w = int(conv6.get_shape()[2]); s_h = 1; s_w = 1;
+    gap_unsqueezed = tf.nn.avg_pool(conv6, ksize=[1, k_h, k_w, 1], strides=[1, s_h, s_w, 1], padding='VALID')
+    gap = tf.squeeze(gap_unsqueezed)
 
-#prob
-#softmax(name='prob'))
-prob = tf.nn.softmax(fc_new)
+
+    # fully-connected layer
+    fc_newW = tf.Variable(tf.zeros([N_CLASSES,N_CLASSES]))
+    fc_newB = tf.Variable(tf.zeros([N_CLASSES]))
+    fc_new = tf.nn.xw_plus_b(gap, fc_newW, fc_newB)
+
+    #prob
+    #softmax(name='prob'))
+    probs = tf.nn.softmax(fc_new)
+
+    return probs
 
 ################################################################################
 
 # Loss/Optimizer
-loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(prob, train_y))
+# TODO: play around with the learning rate
+# TODO: figure out where exactly the accuracy stuff should be returned/evaluated
+probs = network_model(train_x)
+
+loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(probs, train_y))
 optimizer = tf.train.GradientDescentOptimizer(LEARN_RATE).minimize(loss)
 
 # Evaluate model
-correct_pred = tf.equal(tf.argmax(prob,1), tf.argmax(train_y,1))
+correct_pred = tf.equal(tf.argmax(probs,1), tf.argmax(train_y,1))
 accuracy = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
 
 # Initialize variables
-init = tf.initialize_all_variables()
+init = tf.global_variables_initializer()
 
-# Training
+#TODO: make a list of filenames
+filenames = ['/home/ubuntu/aaron/train_shardList.txt']
+image, label = read_and_decode(filenames)
+
 with tf.Session() as sess:
     sess.run(init)
-    n_images = int(train_x.get_shape()[0])
+    tf.train.start_queue_runners(sess=sess)
     for stepoch in range(N_EPOCHS):
-        ids = np.arange(n_images)
-        np.random.shuffle(ids)
-        x_shuffled = train_x[ids]
-        y_shuffled = train_y[ids]
+        # TODO: resize!!
+        print image
+        images_batch, labels_batch = tf.train.shuffle_batch(
+                [image, label],
+                batch_size=BATCH_SIZE,
+                capacity=2000,
+                min_after_dequeue=1000)
+        print "batch sizes:"
+        print images_batch, images_batch.get_shape()
+        feed_dict = {train_x: images_batch, train_y: labels_batch}
+        _, l, predictions = session.run(optimizer, feed_dict=feed_dict)
 
-        for batch_step in range(0, n_images, BATCH_SIZE):
-            x_batch = x_shuffled[batch_step:(batch_step+BATCH_SIZE), :]
-            y_batch = y_shuffled[batch_step:(batch_step+BATCH_SIZE), :]
+################################################################################
 
-            feed_dict = {tf_train_batch: x_batch, tf_train_labels: y_batch}
-            _, l, predictions = session.run([optimizer, loss, batch_prediction], feed_dict=feed_dict)
+#  DEPRECATED
+
+################################################################################
+
+def process_image(image):
+    imageSize = [IMAGE_SIZE, IMAGE_SIZE, 3]
+    if image.ndim==2:
+        image = image.reshape(image.shape+(1,))
+        image = np.tile(image, 3)
+    return imresize(image, imageSize)
+
+def save_image_data(dataName, homedir=HOME_DIR):
+    categories = os.listdir(homedir)
+    fileNames = [os.listdir(homedir+cat) for cat in categories]
+    all_files = [homedir+cat+"/"+file for (cat, files) in zip(categories, fileNames) for file in files]
+    labels = [int(cat.strip("category")) for cat in categories]
+    all_labels = np.array([label for (label, files) in zip(labels, fileNames) for file in files])
+
+    # # flatten arrays
+    all_files = all_files[:1000]
+    # all_files = sum(all_files, [])
+    # all_labels = sum(all_labels, [])
+
+
+    print "Loading images..."
+    t1 = time.time()
+    all_images = np.array([process_image(imread(addr)) for addr in all_files])
+    t2 = time.time()
+    print "Finished loading images:", t2-t1, "seconds (?); shape:", all_images.shape
+
+    f = open(dataName+"_images.pickle", "wb")
+    cPickle.dump(all_images, f)
+    f.close()
+    g = open(dataName+"_labels.pickle", "wb")
+    cPickle.dump(all_labels, g)
+    g.close()
+    print "Finished saving to:", dataName
+
+    return all_files, all_labels
+
+def load_data(dataName):
+    f = open(dataName+"_images.pickle", "rb")
+    g = open(dataName+"_labels.pickle", "rb")
+    images = cPickle.load(f)
+    labels = cPickle.load(g)
+    f.close()
+    g.close()
+
+    return images, labels
+
+# Naive way to train; based on [1]
+def naive_training():
+    with tf.Session() as sess:
+        sess.run(init)
+        n_images = int(train_x.get_shape()[0])
+        for stepoch in range(N_EPOCHS):
+            ids = np.arange(n_images)
+            np.random.shuffle(ids)
+            x_shuffled = train_x[ids]
+            y_shuffled = train_y[ids]
+
+            for batch_step in range(0, n_images, BATCH_SIZE):
+                print "Epoch"+str(stepoch)+": ["+batch_step+"/"+n_images+"]"
+                x_batch = x_shuffled[batch_step:(batch_step+BATCH_SIZE), :]
+                y_batch = y_shuffled[batch_step:(batch_step+BATCH_SIZE), :]
+
+                feed_dict = {tf_train_batch: x_batch, tf_train_labels: y_batch}
+                _, l, predictions = session.run([optimizer, loss, batch_prediction], feed_dict=feed_dict)
          
 
 
 
 
+
+
+
+
+
+
+# [1] https://indico.io/blog/tensorflow-data-inputs-part1-placeholders-protobufs-queues/
 
 
 
