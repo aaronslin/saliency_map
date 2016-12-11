@@ -35,6 +35,11 @@ def process_image(image_buffer):
     image = tf.image.resize_images(image, [IMAGE_SIZE, IMAGE_SIZE])
     return image
 
+def process_label(label_buffer):
+    label = tf.one_hot(label_buffer, N_CLASSES)
+    label = tf.reshape(label, [N_CLASSES])
+    return label
+
 def read_and_decode(filenames):
     # filenames is probably supposed to be a list of the shard names
     # TODO: make sure that the images are actually resized!!
@@ -51,11 +56,28 @@ def read_and_decode(filenames):
         features = feature_map)
     label = features['image/class/label']
     image = features['image/encoded']
-    print "Shape:",image
     
     image = process_image(image)
+    label = process_label(label)
     return image, label
 
+def get_filenames(subset):
+    searchPattern = os.path.join(SHARD_DIR, '%s-*' % subset)
+    dataFiles = tf.gfile.Glob(searchPattern)
+    if not dataFiles:
+        print "WARNING: No data files found when searching for shards."
+    return dataFiles
+filenames = get_filenames("validation")
+
+image, label = read_and_decode(filenames)
+print "Image shape:", image.get_shape()
+print "Label shape:", label.get_shape()
+
+images_batch, labels_batch = tf.train.shuffle_batch(
+        [image, label],
+        batch_size=BATCH_SIZE,
+        capacity=2*BATCH_SIZE,
+        min_after_dequeue=BATCH_SIZE)
 
 
 ################################################################################
@@ -84,8 +106,8 @@ def conv(input, kernel, biases, k_h, k_w, c_o, s_h, s_w,  padding="VALID", group
 # ANS: use train_x for x; input should be the placeholder that goes in the feed_dict key
 # x = tf.placeholder(tf.float32, (None,) + xdim)
 
-train_x = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3])
-train_y = tf.placeholder(tf.float32, shape=[None, 1])
+# train_x = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3])
+# train_y = tf.placeholder(tf.float32, shape=[None, 1])
 #xdim = tuple(train_x.get_shape()[1:])
 #ydim = tuple(train_y.get_shape()[1:])
 
@@ -194,8 +216,12 @@ def network_model(train_x):
 # Loss/Optimizer
 # TODO: play around with the learning rate
 # TODO: figure out where exactly the accuracy stuff should be returned/evaluated
+train_x = images_batch
+train_y = labels_batch
 probs = network_model(train_x)
 
+print "train_y", train_y.get_shape()
+print "probs", probs.get_shape()
 loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(probs, train_y))
 optimizer = tf.train.GradientDescentOptimizer(LEARN_RATE).minimize(loss)
 
@@ -204,42 +230,30 @@ correct_pred = tf.equal(tf.argmax(probs,1), tf.argmax(train_y,1))
 accuracy = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
 
 # Initialize variables
-init = tf.global_variables_initializer()
-
-#TODO: make a list of filenames
-def get_filenames(subset):
-    searchPattern = os.path.join(SHARD_DIR, '%s-*' % subset)
-    dataFiles = tf.gfile.Glob(searchPattern)
-    if not dataFiles:
-        print "WARNING: No data files found when searching for shards."
-    return dataFiles
-filenames = get_filenames("train")
-
-image, label = read_and_decode(filenames)
-print "Image shape:", image.get_shape()
+init = tf.initialize_all_variables()
 
 with tf.Session() as sess:
     sess.run(init)
     tf.train.start_queue_runners(sess=sess)
     for stepoch in range(N_EPOCHS):
         # TODO: resize!!
-        images_batch, labels_batch = tf.train.shuffle_batch(
-                [image, label],
-                batch_size=BATCH_SIZE,
-                capacity=2*BATCH_SIZE,
-                min_after_dequeue=1000)
-        print "Summary"
-        tf.summary.image("images", images_batch)
-        print "batch sizes:"
-        print images_batch 
-        print images_batch.get_shape()
-        print labels_batch
-        print labels_batch.get_shape()
-        print 
-        feed_dict = {train_x: images_batch, train_y: labels_batch}
+        print ""
+        #feed_dict = {train_x: images_batch, train_y: labels_batch}
         print "finished feeddict"
-        _, l, predictions = sess.run(optimizer, feed_dict=feed_dict)
+        _, l, predictions = sess.run([optimizer, loss, correct_pred])
         print "finish end of loop"
+        print l, predictions
+        print ""
+
+
+
+
+
+
+
+
+
+
 
 ################################################################################
 
@@ -295,5 +309,14 @@ def load_data(dataName):
 
 # [1] https://indico.io/blog/tensorflow-data-inputs-part1-placeholders-protobufs-queues/
 # [2] https://github.com/tensorflow/models/blob/master/inception/inception/image_processing.py
+
+
+
+
+
+
+
+
+
 
 
