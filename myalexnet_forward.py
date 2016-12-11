@@ -30,11 +30,10 @@ import cPickle
 import tensorflow as tf
 print ""
 
-#from caffe_classes import class_names
-
-# train_x = zeros((1, 227,227,3)).astype(float32)
-# train_y = zeros((1, N_CLASSES))
-
+def process_image(image_buffer):
+    image = tf.image.decode_jpeg(image_buffer, channels=3)
+    image = tf.image.resize_images(image, [IMAGE_SIZE, IMAGE_SIZE])
+    return image
 
 def read_and_decode(filenames):
     # filenames is probably supposed to be a list of the shard names
@@ -42,16 +41,19 @@ def read_and_decode(filenames):
     filename_queue = tf.train.string_input_producer(filenames, num_epochs=None)
     reader = tf.TFRecordReader()
     _, serialized_example = reader.read(filename_queue)
+    
+    feature_map = {
+            "image/encoded": tf.FixedLenFeature([], dtype=tf.string, default_value=''),
+            "image/class/label": tf.FixedLenFeature([1], dtype=tf.int64, default_value=-1),
+        }
     features = tf.parse_single_example(
         serialized_example,
-        features = {
-            # We know the length of both fields. If not the
-            # tf.VarLenFeature could be used
-            'label': tf.FixedLenFeature([], tf.int64),
-            'image': tf.VarLenFeature(tf.float32)
-        })
-    label = features['label']
-    image = features['image']
+        features = feature_map)
+    label = features['image/class/label']
+    image = features['image/encoded']
+    print "Shape:",image
+    
+    image = process_image(image)
     return image, label
 
 
@@ -205,24 +207,39 @@ accuracy = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
 init = tf.global_variables_initializer()
 
 #TODO: make a list of filenames
-filenames = ['/home/ubuntu/aaron/train_shardList.txt']
+def get_filenames(subset):
+    searchPattern = os.path.join(SHARD_DIR, '%s-*' % subset)
+    dataFiles = tf.gfile.Glob(searchPattern)
+    if not dataFiles:
+        print "WARNING: No data files found when searching for shards."
+    return dataFiles
+filenames = get_filenames("train")
+
 image, label = read_and_decode(filenames)
+print "Image shape:", image.get_shape()
 
 with tf.Session() as sess:
     sess.run(init)
     tf.train.start_queue_runners(sess=sess)
     for stepoch in range(N_EPOCHS):
         # TODO: resize!!
-        print image
         images_batch, labels_batch = tf.train.shuffle_batch(
                 [image, label],
                 batch_size=BATCH_SIZE,
-                capacity=2000,
+                capacity=2*BATCH_SIZE,
                 min_after_dequeue=1000)
+        print "Summary"
+        tf.summary.image("images", images_batch)
         print "batch sizes:"
-        print images_batch, images_batch.get_shape()
+        print images_batch 
+        print images_batch.get_shape()
+        print labels_batch
+        print labels_batch.get_shape()
+        print 
         feed_dict = {train_x: images_batch, train_y: labels_batch}
-        _, l, predictions = session.run(optimizer, feed_dict=feed_dict)
+        print "finished feeddict"
+        _, l, predictions = sess.run(optimizer, feed_dict=feed_dict)
+        print "finish end of loop"
 
 ################################################################################
 
@@ -230,7 +247,7 @@ with tf.Session() as sess:
 
 ################################################################################
 
-def process_image(image):
+def process_image_old(image):
     imageSize = [IMAGE_SIZE, IMAGE_SIZE, 3]
     if image.ndim==2:
         image = image.reshape(image.shape+(1,))
@@ -276,36 +293,7 @@ def load_data(dataName):
 
     return images, labels
 
-# Naive way to train; based on [1]
-def naive_training():
-    with tf.Session() as sess:
-        sess.run(init)
-        n_images = int(train_x.get_shape()[0])
-        for stepoch in range(N_EPOCHS):
-            ids = np.arange(n_images)
-            np.random.shuffle(ids)
-            x_shuffled = train_x[ids]
-            y_shuffled = train_y[ids]
-
-            for batch_step in range(0, n_images, BATCH_SIZE):
-                print "Epoch"+str(stepoch)+": ["+batch_step+"/"+n_images+"]"
-                x_batch = x_shuffled[batch_step:(batch_step+BATCH_SIZE), :]
-                y_batch = y_shuffled[batch_step:(batch_step+BATCH_SIZE), :]
-
-                feed_dict = {tf_train_batch: x_batch, tf_train_labels: y_batch}
-                _, l, predictions = session.run([optimizer, loss, batch_prediction], feed_dict=feed_dict)
-         
-
-
-
-
-
-
-
-
-
-
 # [1] https://indico.io/blog/tensorflow-data-inputs-part1-placeholders-protobufs-queues/
-
+# [2] https://github.com/tensorflow/models/blob/master/inception/inception/image_processing.py
 
 
