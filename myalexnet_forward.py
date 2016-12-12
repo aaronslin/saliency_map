@@ -25,10 +25,12 @@ from scipy.ndimage import filters
 import urllib
 from numpy import random
 from alexnetcam_params import *
+import datetime
 
 import cPickle
 import tensorflow as tf
 print ""
+print "Finished importing modules."
 
 def process_image(image_buffer):
     image = tf.image.decode_jpeg(image_buffer, channels=3)
@@ -67,17 +69,20 @@ def get_filenames(subset):
     if not dataFiles:
         print "WARNING: No data files found when searching for shards."
     return dataFiles
-filenames = get_filenames("validation")
 
-image, label = read_and_decode(filenames)
-print "Image shape:", image.get_shape()
-print "Label shape:", label.get_shape()
+def get_batch_queue(subset):
+    filenames = get_filenames("train")
 
-images_batch, labels_batch = tf.train.shuffle_batch(
-        [image, label],
-        batch_size=BATCH_SIZE,
-        capacity=2*BATCH_SIZE,
-        min_after_dequeue=BATCH_SIZE)
+    image, label = read_and_decode(filenames)
+    print "Image shape:", image.get_shape()
+    print "Label shape:", label.get_shape()
+
+    images_batch, labels_batch = tf.train.shuffle_batch(
+            [image, label],
+            batch_size=BATCH_SIZE,
+            capacity=2*BATCH_SIZE,
+            min_after_dequeue=BATCH_SIZE)
+    return images_batch, labels_batch
 
 
 ################################################################################
@@ -102,16 +107,6 @@ def conv(input, kernel, biases, k_h, k_w, c_o, s_h, s_w,  padding="VALID", group
         conv = tf.concat(3, output_groups)
     return  tf.reshape(tf.nn.bias_add(conv, biases), [-1]+conv.get_shape().as_list()[1:])
 
-# TODO: idk what x is actually supposed to do
-# ANS: use train_x for x; input should be the placeholder that goes in the feed_dict key
-# x = tf.placeholder(tf.float32, (None,) + xdim)
-
-# train_x = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3])
-# train_y = tf.placeholder(tf.float32, shape=[None, 1])
-#xdim = tuple(train_x.get_shape()[1:])
-#ydim = tuple(train_y.get_shape()[1:])
-
-# TODO: can you actually just put the graph inside of a method like this?
 def network_model(train_x): 
     #conv1
     #conv(11, 11, 96, 4, 4, padding='VALID', name='conv1')
@@ -202,56 +197,87 @@ def network_model(train_x):
 
     # fully-connected layer
     fc_newW = tf.Variable(tf.zeros([N_CLASSES,N_CLASSES]))
-    fc_newB = tf.Variable(tf.zeros([N_CLASSES]))
+    fc_newB = tf.zeros([N_CLASSES])
     fc_new = tf.nn.xw_plus_b(gap, fc_newW, fc_newB)
 
     #prob
     #softmax(name='prob'))
     probs = tf.nn.softmax(fc_new)
 
-    return probs
+    return probs, conv6, fc_newW
 
 ################################################################################
 
 # Loss/Optimizer
 # TODO: play around with the learning rate
-# TODO: figure out where exactly the accuracy stuff should be returned/evaluated
-train_x = images_batch
-train_y = labels_batch
-probs = network_model(train_x)
+train_x, train_y = get_batch_queue("train")
+val_x, val_y = get_batch_queue("validation")
 
-print "train_y", train_y.get_shape()
-print "probs", probs.get_shape()
-loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(probs, train_y))
-optimizer = tf.train.GradientDescentOptimizer(LEARN_RATE).minimize(loss)
+def compute_accuracy(predicted, actual):
+    correct_pred = tf.equal(tf.argmax(predicted,1), tf.argmax(actual,1))
+    accuracy = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
+    return accuracy
 
-# Evaluate model
-correct_pred = tf.equal(tf.argmax(probs,1), tf.argmax(train_y,1))
-accuracy = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
+def network_loss(x, y):
+    probs, lastConvLayer, fcWeights = network_model(x)
 
-# Initialize variables
-init = tf.initialize_all_variables()
+    loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(probs, y))
+    optimizer = tf.train.GradientDescentOptimizer(LEARN_RATE).minimize(loss)
+    accuracy = compute_accuracy(probs, y)
+
+    return loss, optimizer, accuracy
+
+def eval_model(x, y):
+    probs, lastConvLayer, fcWeights = network_model(x)
+    accuracy = compute_accuracy(probs, y)
+    return accuracy
+
+def get_save_path(useTime=True):
+    stamp = str(datetime.datetime.now())
+    if not useTime:
+        stamp = "session"
+    return SAVE_DIR + stamp + SAVE_EXT
+
+loss, optimizer, trainAcc = network_loss(train_x, train_y)
+valAcc = eval_model(val_x, val_y)
+
+
+# Saving sessions information
+saver = tf.train.Saver()
+display_step = 10
 
 with tf.Session() as sess:
+    init = tf.initialize_all_variables()
     sess.run(init)
     tf.train.start_queue_runners(sess=sess)
-    for stepoch in range(N_EPOCHS):
-        # TODO: resize!!
+
+    step = 0
+    while step*BATCH_SIZE < TRAINING_ITERS:
+        _, l, acc_train = sess.run([optimizer, loss, trainAcc])
+        print step, "\t(Acc, Loss):\t", "%.4f" % acc_train, "\t", l, "\t",
+        if not step % display_step:
+            acc_val = sess.run([valAcc])
+            print "Val:\t", acc_val,
+            saver.save(sess, get_save_path())
         print ""
-        #feed_dict = {train_x: images_batch, train_y: labels_batch}
-        print "finished feeddict"
-        _, l, predictions = sess.run([optimizer, loss, correct_pred])
-        print "finish end of loop"
-        print l, predictions
-        print ""
+        step +=1
+        
 
 
 
 
+"""
+
+TODO:
+
+[X] How many total loops should we have during training?
+[X] Partial runs (if computer crashes, how to pick up mid-training)
+[ ] Move computations to GPU
+[X] Display validation accuracies
+[ ] Learning rate? How do you test for the best one?
 
 
-
-
+"""
 
 
 
