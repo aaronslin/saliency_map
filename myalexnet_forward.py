@@ -1,4 +1,4 @@
-################################################################################
+###############################################################################
 #Michael Guerzhoy and Davi Frossard, 2016
 #AlexNet implementation in TensorFlow, with weights
 #Details: 
@@ -74,9 +74,6 @@ def get_batch_queue(subset):
     filenames = get_filenames("train")
 
     image, label = read_and_decode(filenames)
-    print "Image shape:", image.get_shape()
-    print "Label shape:", label.get_shape()
-
     images_batch, labels_batch = tf.train.shuffle_batch(
             [image, label],
             batch_size=BATCH_SIZE,
@@ -107,102 +104,123 @@ def conv(input, kernel, biases, k_h, k_w, c_o, s_h, s_w,  padding="VALID", group
         conv = tf.concat(3, output_groups)
     return  tf.reshape(tf.nn.bias_add(conv, biases), [-1]+conv.get_shape().as_list()[1:])
 
-def network_model(train_x): 
-    #conv1
-    #conv(11, 11, 96, 4, 4, padding='VALID', name='conv1')
-    k_h = 11; k_w = 11; c_o = 96; s_h = 4; s_w = 4
-    conv1W = tf.Variable(net_data["conv1"][0])
-    conv1b = tf.Variable(net_data["conv1"][1])
-    conv1_in = conv(train_x, conv1W, conv1b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=1)
-    conv1 = tf.nn.relu(conv1_in)
+weights = {
+    'conv1': tf.Variable(net_data["conv1"][0]),
+    'conv2': tf.Variable(net_data["conv2"][0]),
+    'conv3': tf.Variable(net_data["conv3"][0]),
+    'conv4': tf.Variable(net_data["conv4"][0]),
+    'conv5': tf.Variable(net_data["conv5"][0]),
+    'conv6': tf.Variable(tf.truncated_normal([3,3,256,N_CLASSES], stddev=STDEV)),
+    'fc': tf.Variable(tf.truncated_normal([N_CLASSES,N_CLASSES], stddev=STDEV))
+}
 
-    #lrn1
-    #lrn(2, 2e-05, 0.75, name='norm1')
-    radius = 2; alpha = 2e-05; beta = 0.75; bias = 1.0
-    lrn1 = tf.nn.local_response_normalization(conv1,
-                                                      depth_radius=radius,
-                                                      alpha=alpha,
-                                                      beta=beta,
-                                                      bias=bias)
+biases = {
+    'conv1': tf.Variable(net_data["conv1"][1]),
+    'conv2': tf.Variable(net_data["conv2"][1]),
+    'conv3': tf.Variable(net_data["conv3"][1]),
+    'conv4': tf.Variable(net_data["conv4"][1]),
+    'conv5': tf.Variable(net_data["conv5"][1]),
+    'conv6': tf.zeros([N_CLASSES]),
+    'biasFC': tf.zeros([N_CLASSES])
+}
 
-    #maxpool1
-    #max_pool(3, 3, 2, 2, padding='VALID', name='pool1')
-    k_h = 3; k_w = 3; s_h = 2; s_w = 2; padding = 'VALID'
-    maxpool1 = tf.nn.max_pool(lrn1, ksize=[1, k_h, k_w, 1], strides=[1, s_h, s_w, 1], padding=padding)
+def network_model(weights, biases, train_x):
+    with tf.device('/gpu:0'):
+        #conv1
+        #conv(11, 11, 96, 4, 4, padding='VALID', name='conv1')
+        k_h = 11; k_w = 11; c_o = 96; s_h = 4; s_w = 4
+        conv1W = weights["conv1"]
+        conv1b = biases["conv1"]
+        conv1_in = conv(train_x, conv1W, conv1b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=1)
+        conv1 = tf.nn.relu(conv1_in)
 
+        #lrn1
+        #lrn(2, 2e-05, 0.75, name='norm1')
+        radius = 2; alpha = 2e-05; beta = 0.75; bias = 1.0
+        lrn1 = tf.nn.local_response_normalization(conv1,
+                                                          depth_radius=radius,
+                                                          alpha=alpha,
+                                                          beta=beta,
+                                                          bias=bias)
 
-    #conv2
-    #conv(5, 5, 256, 1, 1, group=2, name='conv2')
-    k_h = 5; k_w = 5; c_o = 256; s_h = 1; s_w = 1; group = 2
-    conv2W = tf.Variable(net_data["conv2"][0])
-    conv2b = tf.Variable(net_data["conv2"][1])
-    conv2_in = conv(maxpool1, conv2W, conv2b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
-    conv2 = tf.nn.relu(conv2_in)
-
-
-    #lrn2
-    #lrn(2, 2e-05, 0.75, name='norm2')
-    radius = 2; alpha = 2e-05; beta = 0.75; bias = 1.0
-    lrn2 = tf.nn.local_response_normalization(conv2,
-                                                      depth_radius=radius,
-                                                      alpha=alpha,
-                                                      beta=beta,
-                                                      bias=bias)
-
-    #maxpool2
-    #max_pool(3, 3, 2, 2, padding='VALID', name='pool2')                                                  
-    k_h = 3; k_w = 3; s_h = 2; s_w = 2; padding = 'VALID'
-    maxpool2 = tf.nn.max_pool(lrn2, ksize=[1, k_h, k_w, 1], strides=[1, s_h, s_w, 1], padding=padding)
-
-    #conv3
-    #conv(3, 3, 384, 1, 1, name='conv3')
-    k_h = 3; k_w = 3; c_o = 384; s_h = 1; s_w = 1; group = 1
-    conv3W = tf.Variable(net_data["conv3"][0])
-    conv3b = tf.Variable(net_data["conv3"][1])
-    conv3_in = conv(maxpool2, conv3W, conv3b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
-    conv3 = tf.nn.relu(conv3_in)
-
-    #conv4
-    #conv(3, 3, 384, 1, 1, group=2, name='conv4')
-    k_h = 3; k_w = 3; c_o = 384; s_h = 1; s_w = 1; group = 2
-    conv4W = tf.Variable(net_data["conv4"][0])
-    conv4b = tf.Variable(net_data["conv4"][1])
-    conv4_in = conv(conv3, conv4W, conv4b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
-    conv4 = tf.nn.relu(conv4_in)
+        #maxpool1
+        #max_pool(3, 3, 2, 2, padding='VALID', name='pool1')
+        k_h = 3; k_w = 3; s_h = 2; s_w = 2; padding = 'VALID'
+        maxpool1 = tf.nn.max_pool(lrn1, ksize=[1, k_h, k_w, 1], strides=[1, s_h, s_w, 1], padding=padding)
 
 
-    #conv5
-    #conv(3, 3, 256, 1, 1, group=2, name='conv5')
-    k_h = 3; k_w = 3; c_o = 256; s_h = 1; s_w = 1; group = 2
-    conv5W = tf.Variable(net_data["conv5"][0])
-    conv5b = tf.Variable(net_data["conv5"][1])
-    conv5_in = conv(conv4, conv5W, conv5b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
-    conv5 = tf.nn.relu(conv5_in)
+        #conv2
+        #conv(5, 5, 256, 1, 1, group=2, name='conv2')
+        k_h = 5; k_w = 5; c_o = 256; s_h = 1; s_w = 1; group = 2
+        conv2W = weights["conv2"]
+        conv2b = biases["conv2"]
+        conv2_in = conv(maxpool1, conv2W, conv2b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
+        conv2 = tf.nn.relu(conv2_in)
 
 
-    # GAP additions
+        #lrn2
+        #lrn(2, 2e-05, 0.75, name='norm2')
+        radius = 2; alpha = 2e-05; beta = 0.75; bias = 1.0
+        lrn2 = tf.nn.local_response_normalization(conv2,
+                                                          depth_radius=radius,
+                                                          alpha=alpha,
+                                                          beta=beta,
+                                                          bias=bias)
 
-    # conv6 layer
-    k_h = 3; k_w = 3; c_o = N_CLASSES; s_h = 1; s_w = 1; group = 1
-    conv6W = tf.Variable(tf.zeros([3,3,256,N_CLASSES]))
-    conv6b = tf.Variable(tf.zeros([N_CLASSES]))
-    conv6 = conv(conv5,conv6W, conv6b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
+        #maxpool2
+        #max_pool(3, 3, 2, 2, padding='VALID', name='pool2')                                                  
+        k_h = 3; k_w = 3; s_h = 2; s_w = 2; padding = 'VALID'
+        maxpool2 = tf.nn.max_pool(lrn2, ksize=[1, k_h, k_w, 1], strides=[1, s_h, s_w, 1], padding=padding)
+
+        #conv3
+        #conv(3, 3, 384, 1, 1, name='conv3')
+        k_h = 3; k_w = 3; c_o = 384; s_h = 1; s_w = 1; group = 1
+        conv3W = weights["conv3"] 
+        conv3b = biases["conv3"]
+        conv3_in = conv(maxpool2, conv3W, conv3b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
+        conv3 = tf.nn.relu(conv3_in)
+
+        #conv4
+        #conv(3, 3, 384, 1, 1, group=2, name='conv4')
+        k_h = 3; k_w = 3; c_o = 384; s_h = 1; s_w = 1; group = 2
+        conv4W = weights["conv4"]
+        conv4b = biases["conv3"]
+        conv4_in = conv(conv3, conv4W, conv4b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
+        conv4 = tf.nn.relu(conv4_in)
 
 
-    # GAP layer
-    k_h = int(conv6.get_shape()[1]); k_w = int(conv6.get_shape()[2]); s_h = 1; s_w = 1;
-    gap_unsqueezed = tf.nn.avg_pool(conv6, ksize=[1, k_h, k_w, 1], strides=[1, s_h, s_w, 1], padding='VALID')
-    gap = tf.squeeze(gap_unsqueezed)
+        #conv5
+        #conv(3, 3, 256, 1, 1, group=2, name='conv5')
+        k_h = 3; k_w = 3; c_o = 256; s_h = 1; s_w = 1; group = 2
+        conv5W = weights["conv5"]
+        conv5b = biases["conv5"]
+        conv5_in = conv(conv4, conv5W, conv5b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
+        conv5 = tf.nn.relu(conv5_in)
 
 
-    # fully-connected layer
-    fc_newW = tf.Variable(tf.zeros([N_CLASSES,N_CLASSES]))
-    fc_newB = tf.zeros([N_CLASSES])
-    fc_new = tf.nn.xw_plus_b(gap, fc_newW, fc_newB)
+        # GAP additions
 
-    #prob
-    #softmax(name='prob'))
-    probs = tf.nn.softmax(fc_new)
+        # conv6 layer
+        k_h = 3; k_w = 3; c_o = N_CLASSES; s_h = 1; s_w = 1; group = 1
+        conv6W = weights["conv6"]
+        conv6b = tf.zeros([N_CLASSES])
+        conv6 = conv(conv5,conv6W, conv6b, k_h, k_w, c_o, s_h, s_w, padding="SAME", group=group)
+
+
+        # GAP layer
+        k_h = int(conv6.get_shape()[1]); k_w = int(conv6.get_shape()[2]); s_h = 1; s_w = 1;
+        gap_unsqueezed = tf.nn.avg_pool(conv6, ksize=[1, k_h, k_w, 1], strides=[1, s_h, s_w, 1], padding='VALID')
+        gap = tf.squeeze(gap_unsqueezed)
+
+
+        # fully-connected layer
+        fc_newW = weights["fc"]
+        fc_newB = tf.zeros([N_CLASSES])
+        fc_new = tf.nn.xw_plus_b(gap, fc_newW, fc_newB)
+
+        #prob
+        #softmax(name='prob'))
+        probs = tf.nn.softmax(fc_new)
 
     return probs, conv6, fc_newW
 
@@ -219,48 +237,62 @@ def compute_accuracy(predicted, actual):
     return accuracy
 
 def network_loss(x, y):
-    probs, lastConvLayer, fcWeights = network_model(x)
+    probs, lastConvLayer, fcWeights = network_model(weights, biases, x)
 
     loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(probs, y))
     optimizer = tf.train.GradientDescentOptimizer(LEARN_RATE).minimize(loss)
     accuracy = compute_accuracy(probs, y)
 
-    return loss, optimizer, accuracy
+    return loss, optimizer, accuracy, fcWeights
 
 def eval_model(x, y):
-    probs, lastConvLayer, fcWeights = network_model(x)
+    probs, lastConvLayer, fcWeights = network_model(weights, biases, x)
     accuracy = compute_accuracy(probs, y)
     return accuracy
 
-def get_save_path(useTime=True):
-    stamp = str(datetime.datetime.now())
-    if not useTime:
-        stamp = "session"
-    return SAVE_DIR + stamp + SAVE_EXT
+def get_save_path(saveName=None):
+    if saveName is None:
+        saveName = str(datetime.datetime.now())
+    return SAVE_DIR + saveName + SAVE_EXT
 
-loss, optimizer, trainAcc = network_loss(train_x, train_y)
+loss, optimizer, trainAcc, fcweights = network_loss(train_x, train_y)
 valAcc = eval_model(val_x, val_y)
 
+init = tf.initialize_all_variables()
 
 # Saving sessions information
 saver = tf.train.Saver()
 display_step = 10
 
+prev = None
+avgVal = []
 with tf.Session() as sess:
-    init = tf.initialize_all_variables()
     sess.run(init)
     tf.train.start_queue_runners(sess=sess)
 
     step = 0
     while step*BATCH_SIZE < TRAINING_ITERS:
         _, l, acc_train = sess.run([optimizer, loss, trainAcc])
-        print step, "\t(Acc, Loss):\t", "%.4f" % acc_train, "\t", l, "\t",
+        print step, "\t(Acc, Loss):\t", "%.4f" % acc_train, "\t%.5f" % l, "   ",
+        acc_val = sess.run(valAcc)
+        fcw = sess.run(weights['fc'])
+        
+        if len(avgVal) == 10:
+            avgVal.pop(0)
+        avgVal.append(acc_val)
+        
+        #if prev is not None:
+        #    np.save("prev", prev)
+        #    np.save("next", fcw)
+        print "Val:  %.5f" % acc_val, "\tFCW: %.9f" % np.sum(fcw), "  avgVal: %.4f" % np.mean(avgVal), "  ", LEARN_RATE
+        prev = fcw
         if not step % display_step:
-            acc_val = sess.run([valAcc])
-            print "Val:\t", acc_val,
-            saver.save(sess, get_save_path())
-        print ""
+            currentFiles = [f for f in os.listdir(SAVE_DIR) if SAVE_NAME in f]
+            for f in currentFiles:
+                os.remove(os.path.join(SAVE_DIR,f))
+            saver.save(sess, get_save_path(SAVE_NAME))
         step +=1
+        #raw_input("Waiting for key input...")
         
 
 
@@ -272,7 +304,7 @@ TODO:
 
 [X] How many total loops should we have during training?
 [X] Partial runs (if computer crashes, how to pick up mid-training)
-[ ] Move computations to GPU
+[X] Move computations to GPU
 [X] Display validation accuracies
 [ ] Learning rate? How do you test for the best one?
 
